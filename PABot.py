@@ -2,8 +2,13 @@ import threading, time, random
 from os import path
 import telepot
 from telepot.loop import MessageLoop
+from telepot.namedtuple import InlineKeyboardMarkup as InlineMarkup
+from telepot.namedtuple import InlineKeyboardButton as InlineBtn
+from telepot.namedtuple import ReplyKeyboardMarkup as ReplyMarkup
+from telepot.namedtuple import KeyboardButton as Btn
+# for broadcast 文字轉語音
 import pyttsx3
-
+# for playing music
 import pafy, vlc
 from youtube_search import YoutubeSearch
 
@@ -41,7 +46,7 @@ def show_plist(user_id) :
     else :
         reply_str = ''
         for i in range(len(personal_plist)) :
-            reply_str += str(i + 1) + '. ' + personal_plist[i]['title'] + '\nhttps://www.youtube.com' + personal_plist[i]['link'] + '\n'
+            reply_str += str(i + 1) + '. ' + personal_plist[i]['title'] + '\nhttps://www.youtube.com' + personal_plist[i]['url_suffix'] + '\n'
         return reply_str
 
 # 檢查要新增的歌曲是否已經在 playlist 中
@@ -50,7 +55,7 @@ def checkPlistHasExisted(user_id, toAddSong) :
     data = file.readlines()
     file.close()
     for i in data :
-        if toAddSong['link'] in i :
+        if toAddSong['url_suffix'] in i :
             result = 'This song is already in your playlist'
             return False, result
     return True, 'OK'
@@ -215,11 +220,14 @@ def play(msg) :
     video = pafy.new(url)
     best = video.getbest()
     playurl = best.url
-    vlc.Instance("prefer-insecure")
-    player = vlc.MediaPlayer(playurl)
+    Instance = vlc.Instance()
+    player = Instance.media_player_new()
+    Media = Instance.media_new(playurl)
+    Media.get_mrl()
+    player.set_media(Media)
     volume = 60
     player.audio_set_volume(volume)
-    a = player.play()
+    player.play()
     time.sleep(5)
     playStatus = 'play'
     # duration = player.get_length() / 1000
@@ -237,14 +245,34 @@ def to_play() :
     while len(playList) > 0 and not stopCmd:
         nowPlayingSong = playList.pop(0)
         print('Now Playing =', nowPlayingSong['title'])
-        play(nowPlayingSong['link'])
+        play(nowPlayingSong['url_suffix'])
 
     stopCmd = False
     isPlaying = False
     playing_thread = None
     return
 
-def handle(msg) :
+def on_callback_query(msg) :
+    global user_status, playList
+    query_id, from_id, query_data = telepot.glance(msg, flavor='callback_query')
+    # print(msg)
+    print('Callback Query:', query_id, from_id, query_data)
+    user_id = msg['from']['username']
+    if user_status.__contains__(user_id) :
+        if user_status[user_id][0] == 'await_add' :
+            search_result = user_status[user_id][1]
+            addSong = search_result[int(query_data)]
+            addSong['orderUser'] = '@' + user_id
+            playList += [addSong]
+            show_str = show()
+            bot.sendMessage(from_id, 'Done. Following is new playlist')
+            time.sleep(1)
+            bot.sendMessage(from_id, show_str)
+            del user_status[user_id]
+    else :
+        bot.sendMessage(from_id, 'you need to search again')
+
+def on_chat_message(msg) :
     global playList, nowPlayingSong, isPlaying
     global playing_thread, user_status
     content_type, chat_type, chat_id = telepot.glance(msg)
@@ -262,6 +290,15 @@ def handle(msg) :
             if msg['text'] == '/start' :
                 # 介紹機器人
                 bot.sendMessage(chat_id, 'Order music and play music in MOLi')
+                replyBtns = [
+                    [Btn(text='/show'), Btn(text='/add'), Btn(text='/play'), Btn(text='/skip'), Btn(text='/stop')],
+                    [Btn(text='/vol_down'), Btn(text='/show_plist'), Btn(text='/vol_up')],
+                    [Btn(text='/add_from_plist'), Btn(text='/play_all_plist')],
+                    [Btn(text='/edit_plist'), Btn(text='/create_plist')],
+                    [Btn(text='/broadcast')]
+                ]
+                time.sleep(1)
+                bot.sendMessage(chat_id, 'Here\'s all function buttons', reply_markup=ReplyMarkup(keyboard=replyBtns))
 
             elif msg['text'] == '/broadcast' :
                 # input text, broadcast in MOLi
@@ -434,12 +471,23 @@ def handle(msg) :
 
                     elif user_status[user_id] == 'add' :
                         search_result = search(msg['text'])
+                        print('search_result===========', search_result)
                         print_result = ''
+                        songList = []
                         for i in range(len(search_result)) :
-                            print_result += str(i + 1) + '. ' + search_result[i]['title'] + '\nhttps://www.youtube.com' + search_result[i]['link'] + '\n'
-                        bot.sendMessage(chat_id, 'Following is search result, please choose a number of songs,\nwhich will be add to playlist', reply_to_message_id = msg['message_id'])
+                            # print_result += str(i + 1) + '. ' + search_result[i]['title'] + '\nhttps://www.youtube.com' + search_result[i]['url_suffix'] + '\n'
+                            songList.append(
+                                [InlineBtn(text=str(i + 1)+'. ' + search_result[i]['title'], callback_data=i)]
+                            )
+                        # bot.sendMessage(chat_id, 'Following is search result, please choose a number of songs,\nwhich will be add to playlist', reply_to_message_id = msg['message_id'])
                         time.sleep(1)
-                        bot.sendMessage(chat_id, print_result, disable_web_page_preview=True)
+                        # bot.sendMessage(chat_id, print_result, disable_web_page_preview=True)
+                        bot.sendMessage(
+                            chat_id,
+                            'Following is search result, please choose a number of songs,\nwhich will be add to playlist',
+                            reply_markup=InlineMarkup(inline_keyboard=songList),
+                            reply_to_message_id = msg['message_id']
+                            )
                         user_status[user_id] = ['await_add', search_result]
 
                     elif user_status[user_id][0] == 'await_add' :
@@ -496,7 +544,7 @@ if __name__ == '__main__' :
     TOKEN = myFile.read().strip()
     # TOKEN = lines[0]
     bot = telepot.Bot(TOKEN)
-    MessageLoop(bot, handle).run_as_thread()
+    MessageLoop(bot, {'chat': on_chat_message, 'callback_query': on_callback_query}).run_as_thread()
     print ('Listening ...')
 
     # Keep the program running.
